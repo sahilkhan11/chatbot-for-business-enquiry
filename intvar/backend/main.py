@@ -89,9 +89,9 @@ def submit_lead(lead: LeadCreate):
 
 @app.post("/chat")
 def chat(body: ChatMessage):
-    GEMINI_KEY = os.getenv("GEMINI_API_KEY")
-    if not GEMINI_KEY:
-        raise HTTPException(status_code=500, detail="GEMINI_API_KEY is not set in environment variables")
+    GROQ_KEY = os.getenv("GROQ_API_KEY")
+    if not GROQ_KEY:
+        raise HTTPException(status_code=500, detail="GROQ_API_KEY is not set in environment variables")
 
     system_prompt = """You are a friendly customer assistant for Intvar, a web and Android development agency in India.
 
@@ -108,47 +108,39 @@ Rules:
 - If unsure, say: "Please contact Sahil at 7372908326 for this"
 Tone: Friendly, professional, concise."""
 
-    # Build Gemini contents array from history
-    contents = []
+    # Build messages array
+    messages = [{"role": "system", "content": system_prompt}]
     for msg in (body.history or [])[-10:]:
-        role = "user" if msg.get("role") == "user" else "model"
-        contents.append({
-            "role": role,
-            "parts": [{"text": msg.get("content", "")}]
-        })
-    contents.append({
-        "role": "user",
-        "parts": [{"text": body.message}]
-    })
+        role = msg.get("role", "user")
+        if role in ("user", "assistant"):
+            messages.append({"role": role, "content": msg.get("content", "")})
+    messages.append({"role": "user", "content": body.message})
 
     payload = json.dumps({
-        "system_instruction": {
-            "parts": [{"text": system_prompt}]
-        },
-        "contents": contents,
-        "generationConfig": {
-            "maxOutputTokens": 300,
-            "temperature": 0.7,
-        }
+        "model": "llama3-8b-8192",
+        "messages": messages,
+        "max_tokens": 300,
+        "temperature": 0.7,
     }).encode("utf-8")
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_KEY}"
-
     req = urllib.request.Request(
-        url,
+        "https://api.groq.com/openai/v1/chat/completions",
         data=payload,
-        headers={"content-type": "application/json"},
+        headers={
+            "Authorization": f"Bearer {GROQ_KEY}",
+            "Content-Type": "application/json",
+        },
         method="POST",
     )
 
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-            reply = data["candidates"][0]["content"]["parts"][0]["text"]
+            reply = data["choices"][0]["message"]["content"]
             return {"reply": reply}
     except urllib.error.HTTPError as e:
         err_body = e.read().decode("utf-8")
-        raise HTTPException(status_code=500, detail=f"Gemini API error: {err_body}")
+        raise HTTPException(status_code=500, detail=f"Groq API error: {err_body}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error: {str(e)} | {traceback.format_exc()}")
 
