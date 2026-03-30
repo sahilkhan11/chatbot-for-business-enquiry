@@ -58,7 +58,7 @@ export default function Home({ setPage }) {
           'Authorization': `Bearer ${GROQ_KEY}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ model: 'llama3-8b-8192', messages, max_tokens: 300, temperature: 0.7 })
+        body: JSON.stringify({ model: 'llama-3.1-8b-instant', messages, max_tokens: 300, temperature: 0.7 })
       })
       const data = await res.json()
       const reply = data.choices[0].message.content
