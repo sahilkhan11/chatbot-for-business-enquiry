@@ -47,9 +47,22 @@ export default function Home({ setPage }) {
     setChatHistory(newHistory)
     setChatLoading(true)
     try {
-      const apiHistory = newHistory.filter(m => m.role !== 'system').slice(-10)
-      const data = await apiPost('/chat', { message: msg, history: apiHistory.slice(0, -1) })
-      setChatHistory(prev => [...prev, { role: 'assistant', content: data.reply }])
+      const GROQ_KEY = import.meta.env.VITE_GROQ_API_KEY
+      const messages = [
+        { role: 'system', content: `You are a friendly customer assistant for Intvar, a web and Android development agency in India. Services: Web development, Android apps, business automation. Owner: Sahil Khan. Contact: 7372908326. Instagram: @Intvar.automate. Only answer questions about Intvar. Keep replies to 2-3 sentences. If unsure say: Please contact Sahil at 7372908326.` },
+        ...newHistory.slice(-10).map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content }))
+      ]
+      const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${GROQ_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ model: 'llama3-8b-8192', messages, max_tokens: 300, temperature: 0.7 })
+      })
+      const data = await res.json()
+      const reply = data.choices[0].message.content
+      setChatHistory(prev => [...prev, { role: 'assistant', content: reply }])
     } catch {
       setChatHistory(prev => [...prev, { role: 'assistant', content: 'Sorry, something went wrong. Please try again.' }])
     }
