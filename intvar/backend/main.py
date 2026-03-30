@@ -89,9 +89,9 @@ def submit_lead(lead: LeadCreate):
 
 @app.post("/chat")
 def chat(body: ChatMessage):
-    ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY")
-    if not ANTHROPIC_KEY:
-        raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY is not set in environment variables")
+    GEMINI_KEY = os.getenv("GEMINI_API_KEY")
+    if not GEMINI_KEY:
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY is not set in environment variables")
 
     system_prompt = """You are a friendly customer assistant for Intvar, a web and Android development agency in India.
 
@@ -104,39 +104,51 @@ About Intvar:
 Rules:
 - Answer only questions about Intvar and its services
 - Keep replies to 2-3 sentences max
-- Push interested leads to contact Sahil: 7372908326
+- Push interested leads to contact Sahil at 7372908326
 - If unsure, say: "Please contact Sahil at 7372908326 for this"
 Tone: Friendly, professional, concise."""
 
-    messages = list(body.history[-10:]) if body.history else []
-    messages.append({"role": "user", "content": body.message})
+    # Build Gemini contents array from history
+    contents = []
+    for msg in (body.history or [])[-10:]:
+        role = "user" if msg.get("role") == "user" else "model"
+        contents.append({
+            "role": role,
+            "parts": [{"text": msg.get("content", "")}]
+        })
+    contents.append({
+        "role": "user",
+        "parts": [{"text": body.message}]
+    })
 
     payload = json.dumps({
-        "model": "claude-sonnet-4-20250514",
-        "max_tokens": 300,
-        "system": system_prompt,
-        "messages": messages,
+        "system_instruction": {
+            "parts": [{"text": system_prompt}]
+        },
+        "contents": contents,
+        "generationConfig": {
+            "maxOutputTokens": 300,
+            "temperature": 0.7,
+        }
     }).encode("utf-8")
 
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
+
     req = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages",
+        url,
         data=payload,
-        headers={
-            "x-api-key": ANTHROPIC_KEY,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-        },
+        headers={"content-type": "application/json"},
         method="POST",
     )
 
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-            reply = data["content"][0]["text"]
+            reply = data["candidates"][0]["content"]["parts"][0]["text"]
             return {"reply": reply}
     except urllib.error.HTTPError as e:
         err_body = e.read().decode("utf-8")
-        raise HTTPException(status_code=500, detail=f"Claude API error: {err_body}")
+        raise HTTPException(status_code=500, detail=f"Gemini API error: {err_body}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error: {str(e)} | {traceback.format_exc()}")
 
