@@ -4,6 +4,10 @@ from pydantic import BaseModel, EmailStr
 from typing import Optional, List
 from datetime import datetime
 import os
+import json
+import urllib.request
+import urllib.error
+import traceback
 from supabase import create_client, Client
 from dotenv import load_dotenv
 
@@ -13,7 +17,7 @@ app = FastAPI(title="Intvar API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production: set your Vercel domain
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -36,7 +40,7 @@ class LeadCreate(BaseModel):
     message: str
 
 class LeadStatusUpdate(BaseModel):
-    status: str  # "new" | "contacted" | "closed"
+    status: str
 
 class ChatMessage(BaseModel):
     message: str
@@ -46,7 +50,6 @@ class ChatMessage(BaseModel):
 # ---------- Auth helper ----------
 
 async def get_current_user(authorization: str = Header(None)):
-    """Verify Supabase JWT token for admin routes."""
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing or invalid token")
     token = authorization.split(" ")[1]
@@ -68,7 +71,6 @@ def root():
 
 @app.post("/leads", status_code=201)
 def submit_lead(lead: LeadCreate):
-    """Anyone can submit a lead (contact form)."""
     try:
         data = {
             "name": lead.name,
@@ -86,13 +88,10 @@ def submit_lead(lead: LeadCreate):
 
 
 @app.post("/chat")
-async def chat(body: ChatMessage):
-    """AI chatbot endpoint using Claude API."""
-    import httpx
-
+def chat(body: ChatMessage):
     ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY")
     if not ANTHROPIC_KEY:
-        raise HTTPException(status_code=500, detail="API key not configured")
+        raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY is not set in environment variables")
 
     system_prompt = """You are a friendly customer assistant for Intvar, a web and Android development agency in India.
 
@@ -109,37 +108,43 @@ Rules:
 - If unsure, say: "Please contact Sahil at 7372908326 for this"
 Tone: Friendly, professional, concise."""
 
-    messages = body.history[-10:] if body.history else []
+    messages = list(body.history[-10:]) if body.history else []
     messages.append({"role": "user", "content": body.message})
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        res = await client.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": ANTHROPIC_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
-                "model": "claude-sonnet-4-20250514",
-                "max_tokens": 300,
-                "system": system_prompt,
-                "messages": messages,
-            },
-        )
-    data = res.json()
-    if res.status_code != 200:
-        raise HTTPException(status_code=500, detail=data.get("error", {}).get("message", "Claude error"))
+    payload = json.dumps({
+        "model": "claude-sonnet-4-20250514",
+        "max_tokens": 300,
+        "system": system_prompt,
+        "messages": messages,
+    }).encode("utf-8")
 
-    reply = data["content"][0]["text"]
-    return {"reply": reply}
+    req = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages",
+        data=payload,
+        headers={
+            "x-api-key": ANTHROPIC_KEY,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            reply = data["content"][0]["text"]
+            return {"reply": reply}
+    except urllib.error.HTTPError as e:
+        err_body = e.read().decode("utf-8")
+        raise HTTPException(status_code=500, detail=f"Claude API error: {err_body}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)} | {traceback.format_exc()}")
 
 
-# ---------- Admin routes (require auth) ----------
+# ---------- Admin routes ----------
 
 @app.get("/admin/leads")
 def get_leads(user=Depends(get_current_user)):
-    """Get all leads - admin only."""
     try:
         result = supabase.table("leads").select("*").order("created_at", desc=True).execute()
         return result.data
@@ -149,7 +154,6 @@ def get_leads(user=Depends(get_current_user)):
 
 @app.patch("/admin/leads/{lead_id}")
 def update_lead_status(lead_id: str, body: LeadStatusUpdate, user=Depends(get_current_user)):
-    """Update lead status - admin only."""
     if body.status not in ["new", "contacted", "closed"]:
         raise HTTPException(status_code=400, detail="Invalid status")
     try:
@@ -161,7 +165,6 @@ def update_lead_status(lead_id: str, body: LeadStatusUpdate, user=Depends(get_cu
 
 @app.delete("/admin/leads/{lead_id}")
 def delete_lead(lead_id: str, user=Depends(get_current_user)):
-    """Delete a lead - admin only."""
     try:
         supabase.table("leads").delete().eq("id", lead_id).execute()
         return {"success": True}
@@ -171,7 +174,6 @@ def delete_lead(lead_id: str, user=Depends(get_current_user)):
 
 @app.get("/admin/stats")
 def get_stats(user=Depends(get_current_user)):
-    """Dashboard stats - admin only."""
     try:
         all_leads = supabase.table("leads").select("status, created_at").execute().data
         today = datetime.utcnow().date().isoformat()
@@ -180,12 +182,6 @@ def get_stats(user=Depends(get_current_user)):
         contacted = sum(1 for l in all_leads if l["status"] == "contacted")
         closed = sum(1 for l in all_leads if l["status"] == "closed")
         today_count = sum(1 for l in all_leads if l["created_at"][:10] == today)
-        return {
-            "total": total,
-            "new": new,
-            "contacted": contacted,
-            "closed": closed,
-            "today": today_count,
-        }
+        return {"total": total, "new": new, "contacted": contacted, "closed": closed, "today": today_count}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
